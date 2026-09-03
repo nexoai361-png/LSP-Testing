@@ -41,7 +41,8 @@ export class CodeEditorManager {
     initialContent: string,
     initialMode: string,
     onCursorChange: (pos: CursorPosition) => void,
-    onChange: (content: string) => void
+    onChange: (content: string) => void,
+    onFocus?: () => void
   ): ace.Ace.Editor {
     const aceObj = (ace as any).default || ace;
     if (aceObj && aceObj.config) {
@@ -82,6 +83,12 @@ export class CodeEditorManager {
     this.onCursorChangeCallback = onCursorChange;
     this.onChangeCallback = onChange;
 
+    if (onFocus) {
+      this.editor.on('focus', () => {
+        onFocus();
+      });
+    }
+
     // Register custom LSP completer
     const langTools = (aceObj as any).require ? (aceObj as any).require('ace/ext/language_tools') : null;
     if (langTools) {
@@ -106,13 +113,33 @@ export class CodeEditorManager {
     const renderHoverHtml = (text: string): string => {
       if (!text) return "";
 
-      // Escape basic HTML tags to prevent broken rendering or XSS
-      let escaped = text
+      const mdImagePlaceholders: string[] = [];
+      const rawImagePlaceholders: string[] = [];
+
+      // 1. Extract markdown-style images with Data URIs: ![alt](data:image/...)
+      let processed = text.replace(/!\[([^\]]*)\]\((data:image\/[a-zA-Z+.-]+;[^)\s"'>]+)\)/g, (match, alt, uri) => {
+        const placeholder = `__MD_IMAGE_PLACEHOLDER_${mdImagePlaceholders.length}__`;
+        const cleanUri = uri.replace(/\s+/g, "");
+        const cleanAlt = alt || "image";
+        mdImagePlaceholders.push(`<img src="${cleanUri}" alt="${cleanAlt}" referrerpolicy="no-referrer" style="display: block; max-width: 100%; max-height: 140px; object-fit: contain; margin: 6px 0; border: 1px solid #3C3C3C; background: #222222;" />`);
+        return placeholder;
+      });
+
+      // 2. Extract remaining raw Data URIs that are not in markdown image format
+      processed = processed.replace(/(data:image\/[a-zA-Z+.-]+;[^)\s"'>]+)/g, (match, uri) => {
+        const placeholder = `__RAW_IMAGE_PLACEHOLDER_${rawImagePlaceholders.length}__`;
+        const cleanUri = uri.replace(/\s+/g, "");
+        rawImagePlaceholders.push(`<img src="${cleanUri}" alt="embedded image" referrerpolicy="no-referrer" style="display: block; max-width: 100%; max-height: 140px; object-fit: contain; margin: 6px 0; border: 1px solid #3C3C3C; background: #222222;" />`);
+        return placeholder;
+      });
+
+      // 3. Escape basic HTML tags to prevent broken rendering or XSS
+      let escaped = processed
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
 
-      // Replace markdown links with neat MDN Reference links (without full URL text, keeping only "MDN Reference")
+      // 4. Replace markdown links with neat MDN Reference links (without full URL text, keeping only "MDN Reference")
       escaped = escaped.replace(/\\?\[([^\]]+)\\?\]\((https?:\/\/[^\s)]+)\)/g, (match, linkText, url) => {
         return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: underline; font-weight: 600; cursor: pointer;">MDN Reference</a>`;
       });
@@ -130,7 +157,15 @@ export class CodeEditorManager {
         return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: underline; font-weight: 600; cursor: pointer;">MDN Reference</a>${trailing}`;
       });
 
-      // No icons or extra VS Code styling are added, resulting in a clean layout.
+      // 5. Restore image placeholders as safe parsed HTML elements
+      mdImagePlaceholders.forEach((htmlVal, index) => {
+        escaped = escaped.replace(`__MD_IMAGE_PLACEHOLDER_${index}__`, htmlVal);
+      });
+      rawImagePlaceholders.forEach((htmlVal, index) => {
+        escaped = escaped.replace(`__RAW_IMAGE_PLACEHOLDER_${index}__`, htmlVal);
+      });
+
+      // Convert newlines to line breaks
       return escaped.replace(/\r?\n/g, "<br>");
     };
 

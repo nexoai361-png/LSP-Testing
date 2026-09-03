@@ -527,6 +527,47 @@ export class LspClient {
     session.setAnnotations(annotations);
   }
 
+  private parseDocHtml(text: string | undefined): string | undefined {
+    if (!text) return undefined;
+
+    const mdImagePlaceholders: string[] = [];
+    const rawImagePlaceholders: string[] = [];
+
+    // 1. Extract markdown-style images with Data URIs: ![alt](data:image/...)
+    let processed = text.replace(/!\[([^\]]*)\]\((data:image\/[a-zA-Z+.-]+;[^)\s"'>]+)\)/g, (match, alt, uri) => {
+      const placeholder = `__MD_IMAGE_PLACEHOLDER_${mdImagePlaceholders.length}__`;
+      const cleanUri = uri.replace(/\s+/g, "");
+      const cleanAlt = alt || "image";
+      mdImagePlaceholders.push(`<img src="${cleanUri}" alt="${cleanAlt}" referrerpolicy="no-referrer" style="display: block; max-width: 100%; max-height: 100px; object-fit: contain; margin: 4px 0; border: 1px solid #3C3C3C; background: #222222;" />`);
+      return placeholder;
+    });
+
+    // 2. Extract remaining raw Data URIs that are not in markdown image format
+    processed = processed.replace(/(data:image\/[a-zA-Z+.-]+;[^)\s"'>]+)/g, (match, uri) => {
+      const placeholder = `__RAW_IMAGE_PLACEHOLDER_${rawImagePlaceholders.length}__`;
+      const cleanUri = uri.replace(/\s+/g, "");
+      rawImagePlaceholders.push(`<img src="${cleanUri}" alt="embedded image" referrerpolicy="no-referrer" style="display: block; max-width: 100%; max-height: 100px; object-fit: contain; margin: 4px 0; border: 1px solid #3C3C3C; background: #222222;" />`);
+      return placeholder;
+    });
+
+    // 3. Escape basic HTML tags to prevent broken rendering or XSS
+    let escaped = processed
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+    // 4. Restore image placeholders as safe parsed HTML elements
+    mdImagePlaceholders.forEach((htmlVal, index) => {
+      escaped = escaped.replace(`__MD_IMAGE_PLACEHOLDER_${index}__`, htmlVal);
+    });
+    rawImagePlaceholders.forEach((htmlVal, index) => {
+      escaped = escaped.replace(`__RAW_IMAGE_PLACEHOLDER_${index}__`, htmlVal);
+    });
+
+    // Convert newlines to line breaks
+    return escaped.replace(/\r?\n/g, "<br>");
+  }
+
   public async getCompletions(row: number, column: number): Promise<any[]> {
     if (!this.isInitialized) return [];
     try {
@@ -549,12 +590,14 @@ export class LspClient {
         const kinds = ["", "Text", "Method", "Function", "Constructor", "Field", "Variable", "Class", "Interface", "Module", "Property", "Unit", "Value", "Enum", "Keyword", "Snippet", "Color", "File", "Reference", "Folder", "EnumMember", "Constant", "Struct", "Event", "Operator", "TypeParameter"];
         const kindStr = kinds[item.kind] || "LSP";
 
+        const docVal = item.documentation ? (typeof item.documentation === 'object' ? item.documentation.value : item.documentation) : undefined;
+
         return {
           caption: item.label,
           value: insertText,
           meta: kindStr,
           score: 1000 + (item.sortText ? 100 - item.sortText.charCodeAt(0) : 0),
-          docHTML: item.documentation ? (typeof item.documentation === 'object' ? item.documentation.value : item.documentation) : undefined
+          docHTML: this.parseDocHtml(docVal)
         };
       });
     } catch (err) {
