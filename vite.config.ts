@@ -9,7 +9,6 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
-        'htmlhint': path.resolve(__dirname, 'node_modules/htmlhint/dist/htmlhint.js'),
       },
     },
     server: {

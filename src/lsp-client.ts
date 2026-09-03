@@ -1,5 +1,4 @@
 import { Ace } from "ace-builds";
-import { HTMLHint } from "htmlhint";
 
 export class LspClient {
   private ws: WebSocket | null = null;
@@ -270,39 +269,244 @@ export class LspClient {
       });
     });
 
-    // 2. If HTML, run HTMLHint and merge results
+    // 2. If HTML, run our local high-fidelity HTML validator to catch errors
     if (this.language === "html") {
       try {
-        const htmlHintErrors = HTMLHint.verify(text, {
-          "tagname-lowercase": true,
-          "attr-lowercase": true,
-          "attr-value-double-quotes": true,
-          "tag-pair": true,
-          "id-unique": true,
-          "src-not-empty": true,
-          "attr-no-duplication": true,
-          "tag-no-obsolete": true
-        });
+        const errors: { line: number; col: number; type: "error" | "warning"; message: string; raw?: string }[] = [];
+        const tags: { name: string; isClosing: boolean; isSelfClosing: boolean; line: number; col: number; raw: string }[] = [];
 
-        htmlHintErrors.forEach((err: any) => {
+        let i = 0;
+        let line = 1;
+        let col = 1;
+        const len = text.length;
+
+        const advance = (n = 1) => {
+          for (let k = 0; k < n; k++) {
+            if (i >= len) break;
+            const char = text[i];
+            if (char === '\n') {
+              line++;
+              col = 1;
+            } else {
+              col++;
+            }
+            i++;
+          }
+        };
+
+        const VOID_ELEMENTS = new Set([
+          'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 
+          'link', 'meta', 'param', 'source', 'track', 'wbr'
+        ]);
+
+        const SELF_CLOSING_ON_NESTING = new Set(['title', 'p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a']);
+        const OPTIONAL_CLOSE = new Set(['li', 'dt', 'dd', 'option']);
+
+        // Tokenize HTML Tags & scan for unclosed structures
+        while (i < len) {
+          const char = text[i];
+
+          // 1. Comments: <!-- ... -->
+          if (char === '<' && text.substring(i, i + 4) === '<!--') {
+            const startLine = line;
+            const startCol = col;
+            advance(4);
+            let foundClose = false;
+            while (i < len) {
+              if (text.substring(i, i + 3) === '-->') {
+                advance(3);
+                foundClose = true;
+                break;
+              }
+              advance();
+            }
+            if (!foundClose) {
+              errors.push({
+                line: startLine,
+                col: startCol,
+                type: 'error',
+                message: 'Comment was not closed with "-->"',
+                raw: '<!--'
+              });
+            }
+            continue;
+          }
+
+          // 2. Doctype or other <! structures
+          if (char === '<' && text[i + 1] === '!') {
+            advance(2);
+            while (i < len && text[i] !== '>') {
+              advance();
+            }
+            if (i < len) advance();
+            continue;
+          }
+
+          // 3. Normal HTML tags
+          if (char === '<' && i + 1 < len && /^[a-zA-Z/!]/.test(text[i + 1])) {
+            const startLine = line;
+            const startCol = col;
+            const tagIndex = i;
+
+            const isClosing = text[i + 1] === '/';
+            advance(isClosing ? 2 : 1);
+
+            let tagName = "";
+            while (i < len && /^[a-zA-Z0-9:-]/.test(text[i])) {
+              tagName += text[i];
+              advance();
+            }
+            tagName = tagName.toLowerCase();
+
+            let isSelfClosing = false;
+            let hasClosed = false;
+            let inQuote: string | null = null;
+
+            while (i < len) {
+              const c = text[i];
+              if (inQuote) {
+                if (c === inQuote) {
+                  inQuote = null;
+                }
+                advance();
+              } else {
+                if (c === '"' || c === "'") {
+                  inQuote = c;
+                  advance();
+                } else if (c === '>') {
+                  if (text[i - 1] === '/') {
+                    isSelfClosing = true;
+                  }
+                  advance();
+                  hasClosed = true;
+                  break;
+                } else if (c === '<') {
+                  break; // Found a new tag before closing this one
+                } else {
+                  advance();
+                }
+              }
+            }
+
+            const tagRaw = text.substring(tagIndex, i);
+
+            if (!hasClosed) {
+              errors.push({
+                line: startLine,
+                col: startCol,
+                type: 'error',
+                message: `Tag "${tagName || 'unknown'}" is not closed with ">"`,
+                raw: tagRaw
+              });
+              continue;
+            }
+
+            if (tagName) {
+              tags.push({
+                name: tagName,
+                isClosing,
+                isSelfClosing,
+                line: startLine,
+                col: startCol,
+                raw: tagRaw
+              });
+            }
+            continue;
+          }
+
+          advance();
+        }
+
+        // Validate nested structure & tag pairs
+        const stack: { name: string; line: number; col: number; raw: string }[] = [];
+
+        for (const tag of tags) {
+          if (tag.isClosing) {
+            // Auto-pop optional closing tags if parent tag is being closed
+            while (stack.length > 0 && OPTIONAL_CLOSE.has(stack[stack.length - 1].name) && stack[stack.length - 1].name !== tag.name) {
+              stack.pop();
+            }
+
+            if (stack.length === 0) {
+              errors.push({
+                line: tag.line,
+                col: tag.col,
+                type: 'error',
+                message: `Stray closing tag "</${tag.name}>" without a matching opening tag`,
+                raw: tag.raw
+              });
+            } else {
+              const matchIndex = stack.map(t => t.name).lastIndexOf(tag.name);
+              if (matchIndex !== -1) {
+                for (let j = stack.length - 1; j > matchIndex; j--) {
+                  const unclosed = stack[j];
+                  errors.push({
+                    line: unclosed.line,
+                    col: unclosed.col,
+                    type: 'error',
+                    message: `Tag "${unclosed.name}" was opened but closed by mismatched tag "</${tag.name}>"`,
+                    raw: unclosed.raw
+                  });
+                }
+                stack.splice(matchIndex);
+              } else {
+                const top = stack[stack.length - 1];
+                errors.push({
+                  line: tag.line,
+                  col: tag.col,
+                  type: 'error',
+                  message: `Mismatched closing tag "</${tag.name}>", expected "</${top.name}>"`,
+                  raw: tag.raw
+                });
+              }
+            }
+          } else {
+            if (tag.isSelfClosing || VOID_ELEMENTS.has(tag.name)) {
+              continue;
+            }
+
+            // Check if opening nested tag is duplicate of self-closing-on-nesting elements
+            if (SELF_CLOSING_ON_NESTING.has(tag.name) && stack.length > 0 && stack[stack.length - 1].name === tag.name) {
+              const prev = stack.pop()!;
+              errors.push({
+                line: prev.line,
+                col: prev.col,
+                type: 'error',
+                message: `Tag "${tag.name}" was closed with an opening tag "<${tag.name}>" instead of "</${tag.name}>"`,
+                raw: prev.raw
+              });
+            }
+
+            stack.push({
+              name: tag.name,
+              line: tag.line,
+              col: tag.col,
+              raw: tag.raw
+            });
+          }
+        }
+
+        // Remaining tags in stack are never closed
+        for (const unclosed of stack) {
+          errors.push({
+            line: unclosed.line,
+            col: unclosed.col,
+            type: 'error',
+            message: `Tag "${unclosed.name}" was never closed with a matching "</${unclosed.name}>"`,
+            raw: unclosed.raw
+          });
+        }
+
+        // Add annotations & markers
+        errors.forEach((err) => {
           const row = err.line - 1;
           const col = err.col - 1;
-
-          let type: "error" | "warning" | "info" = "error";
-          let className = "lsp-error-marker";
-          if (err.type === "warning") {
-            type = "warning";
-            className = "lsp-warning-marker";
-          } else if (err.type === "info") {
-            type = "info";
-            className = "lsp-info-marker";
-          }
 
           const isDuplicate = annotations.some(ann => ann.row === row && ann.column === col && ann.text === err.message);
           if (!isDuplicate) {
             if (Range) {
               const r = new Range(row, col, row, col + (err.raw ? err.raw.length : 1));
-              const markerId = session.addMarker(r, className, "text");
+              const markerId = session.addMarker(r, "lsp-error-marker", "text");
               this.diagnosticMarkers.push(markerId);
             }
 
@@ -310,12 +514,13 @@ export class LspClient {
               row,
               column: col,
               text: err.message,
-              type
+              type: "error"
             });
           }
         });
+
       } catch (e) {
-        console.warn("[LSP Client] HTMLHint verification error:", e);
+        console.warn("[LSP Client] Custom HTML validator error:", e);
       }
     }
 
