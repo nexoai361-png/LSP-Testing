@@ -6,8 +6,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import { spawn, ChildProcessByStdio } from "child_process";
 import { Writable, Readable } from "stream";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Safe __filename & __dirname for both ESM (tsx) and CJS (compiled production bundle)
+const _filename = typeof __filename !== 'undefined' ? __filename : (typeof import.meta !== 'undefined' && import.meta.url ? fileURLToPath(import.meta.url) : '');
+const _dirname = typeof __dirname !== 'undefined' ? __dirname : (_filename ? path.dirname(_filename) : '');
 
 class LspStreamParser {
   private buffer = Buffer.alloc(0);
