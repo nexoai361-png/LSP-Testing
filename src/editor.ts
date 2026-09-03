@@ -112,13 +112,38 @@ export class CodeEditorManager {
 
       if (!hoverTooltip) {
         hoverTooltip = document.createElement('div');
-        hoverTooltip.className = 'fixed bg-[#1F1F1F] text-[#CCCCCC] border border-[#3C3C3C] rounded p-2.5 text-xs font-sans max-w-xs shadow-2xl z-[99999] pointer-events-none whitespace-pre-wrap leading-relaxed transition-opacity duration-150';
+        hoverTooltip.className = 'fixed bg-[#1e1e1e] text-[#cccccc] border border-[#454545] rounded-md p-3 text-xs shadow-2xl z-[99999] pointer-events-none whitespace-pre-wrap leading-relaxed transition-opacity duration-150 font-[\'Lato\',sans-serif]';
         document.body.appendChild(hoverTooltip);
       }
 
       hoverTooltip.textContent = hoverText;
-      hoverTooltip.style.left = `${clientX + 10}px`;
-      hoverTooltip.style.top = `${clientY + 15}px`;
+
+      // Adjust dimensions dynamically
+      hoverTooltip.style.width = '280px';
+      hoverTooltip.style.maxWidth = 'calc(100vw - 32px)';
+      hoverTooltip.style.boxSizing = 'border-box';
+
+      const tooltipWidth = hoverTooltip.offsetWidth || 280;
+      const tooltipHeight = hoverTooltip.offsetHeight || 60;
+
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      let left = clientX + 12;
+      let top = clientY + 18;
+
+      // Prevent overflow horizontally
+      if (left + tooltipWidth > viewportWidth - 16) {
+        left = Math.max(16, clientX - tooltipWidth - 12);
+      }
+
+      // Prevent overflow vertically
+      if (top + tooltipHeight > viewportHeight - 16) {
+        top = Math.max(16, clientY - tooltipHeight - 12);
+      }
+
+      hoverTooltip.style.left = `${left}px`;
+      hoverTooltip.style.top = `${top}px`;
       hoverTooltip.style.opacity = '1';
     };
 

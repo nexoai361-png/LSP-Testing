@@ -9,6 +9,7 @@ export class LspClient {
   private changeTimeout: any = null;
   private documentVersion = 1;
   private connectionStatusCallback?: (status: "connecting" | "connected" | "disconnected" | "error", message?: string) => void;
+  private diagnosticMarkers: number[] = [];
 
   constructor(
     private editor: Ace.Editor,
@@ -173,25 +174,54 @@ export class LspClient {
   private handleDiagnostics(params: any) {
     if (params.uri !== this.uri) return;
     const diagnostics = params.diagnostics || [];
-    
+    const session = this.editor.getSession();
+
+    // Clear old markers safely
+    if (this.diagnosticMarkers) {
+      for (const id of this.diagnosticMarkers) {
+        session.removeMarker(id);
+      }
+    }
+    this.diagnosticMarkers = [];
+
+    const aceObj = (window as any).ace;
+    const Range = aceObj ? aceObj.require("ace/range").Range : null;
+
     const annotations: Ace.Annotation[] = diagnostics.map((diag: any) => {
       // LSP is 0-indexed line & character
-      const row = diag.range.start.line;
-      const column = diag.range.start.character;
+      const startRow = diag.range.start.line;
+      const startCol = diag.range.start.character;
+      const endRow = diag.range.end.line;
+      const endCol = diag.range.end.character;
       
       let type: "error" | "warning" | "info" = "info";
-      if (diag.severity === 1) type = "error";
-      else if (diag.severity === 2) type = "warning";
+      let className = "lsp-info-marker";
+      if (diag.severity === 1) {
+        type = "error";
+        className = "lsp-error-marker";
+      } else if (diag.severity === 2) {
+        type = "warning";
+        className = "lsp-warning-marker";
+      }
+
+      // Add a visual text marker in the editor if Range exists
+      if (Range && startRow !== undefined && startCol !== undefined) {
+        // Adjust end column to make sure there's a visible highlight length
+        const adjustedEndCol = (startRow === endRow && startCol === endCol) ? startCol + 1 : endCol;
+        const r = new Range(startRow, startCol, endRow, adjustedEndCol);
+        const markerId = session.addMarker(r, className, "text");
+        this.diagnosticMarkers.push(markerId);
+      }
 
       return {
-        row,
-        column,
+        row: startRow,
+        column: startCol,
         text: diag.message,
         type
       };
     });
 
-    this.editor.getSession().setAnnotations(annotations);
+    session.setAnnotations(annotations);
   }
 
   public async getCompletions(row: number, column: number): Promise<any[]> {
@@ -301,5 +331,15 @@ export class LspClient {
     if (this.changeTimeout) {
       clearTimeout(this.changeTimeout);
     }
+    
+    // Clear diagnostic markers and annotations in the editor session
+    const session = this.editor.getSession();
+    if (this.diagnosticMarkers) {
+      for (const id of this.diagnosticMarkers) {
+        session.removeMarker(id);
+      }
+    }
+    this.diagnosticMarkers = [];
+    session.setAnnotations([]);
   }
 }

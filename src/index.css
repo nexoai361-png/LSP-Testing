@@ -197,3 +197,56 @@ i, .fa-solid, .fa-regular, .fa-brands, .fa, svg {
   border: 1px solid #007acc !important;
   border-radius: 4px !important;
 }
+
+/* Inline LSP Diagnostics Markers mimicking VS Code */
+.lsp-error-marker {
+  position: absolute;
+  border-bottom: 2px dashed #EF4444 !important;
+  z-index: 20 !important;
+}
+
+.lsp-warning-marker {
+  position: absolute;
+  border-bottom: 2px dashed #F59E0B !important;
+  z-index: 20 !important;
+}
+
+.lsp-info-marker {
+  position: absolute;
+  border-bottom: 1.5px dotted #3B82F6 !important;
+  z-index: 20 !important;
+}
+
+/* VS Code style Gutter Annotations */
+.ace_gutter-cell.ace_error {
+  background-image: none !important;
+  color: #EF4444 !important;
+  position: relative;
+}
+.ace_gutter-cell.ace_error::after {
+  content: "•";
+  color: #EF4444;
+  font-size: 18px;
+  font-weight: bold;
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.ace_gutter-cell.ace_warning {
+  background-image: none !important;
+  color: #F59E0B !important;
+  position: relative;
+}
+.ace_gutter-cell.ace_warning::after {
+  content: "•";
+  color: #F59E0B;
+  font-size: 18px;
+  font-weight: bold;
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
