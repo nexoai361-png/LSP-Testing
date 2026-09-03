@@ -1,0 +1,6 @@
+{
+  "name": "Code Editor",
+  "description": "A simple professional mobile-optimized code editor powered by Ace Editor with syntax highlighting and AMOLED dark theme.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
