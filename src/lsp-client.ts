@@ -1,4 +1,5 @@
 import { Ace } from "ace-builds";
+import { HTMLHint } from "htmlhint";
 
 export class LspClient {
   private ws: WebSocket | null = null;
@@ -10,6 +11,7 @@ export class LspClient {
   private documentVersion = 1;
   private connectionStatusCallback?: (status: "connecting" | "connected" | "disconnected" | "error", message?: string) => void;
   private diagnosticMarkers: number[] = [];
+  private serverDiagnostics: any[] = [];
 
   constructor(
     private editor: Ace.Editor,
@@ -68,6 +70,9 @@ export class LspClient {
       rootPath: "/app",
       rootUri: "file:///app",
       capabilities: {
+        workspace: {
+          configuration: true
+        },
         textDocument: {
           completion: {
             completionItem: {
@@ -130,9 +135,49 @@ export class LspClient {
       return;
     }
 
+    // Check if it's a request from the server
+    if (msg.id !== undefined && msg.method !== undefined && !this.pendingRequests.has(msg.id)) {
+      if (msg.method === "workspace/configuration") {
+        const items = msg.params?.items || [];
+        const result = items.map((item: any) => {
+          if (item.section === "html") {
+            return {
+              format: { enable: true },
+              suggest: { html5: true },
+              validate: { styles: true, scripts: true }
+            };
+          }
+          if (item.section === "css") {
+            return {
+              validate: true
+            };
+          }
+          return {};
+        });
+        
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result
+          }));
+        }
+      } else {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result: {}
+          }));
+        }
+      }
+      return;
+    }
+
     // Check if it's a notification
     if (msg.method === "textDocument/publishDiagnostics") {
-      this.handleDiagnostics(msg.params);
+      this.serverDiagnostics = msg.params.diagnostics || [];
+      this.refreshDiagnostics();
     } else if (msg.method === "window/showMessage") {
       console.log(`[LSP Message]:`, msg.params.message);
     }
@@ -148,11 +193,16 @@ export class LspClient {
         text
       }
     });
+    // Trigger initial diagnostic check
+    this.refreshDiagnostics();
   }
 
   public notifyDocumentChanged() {
     if (!this.isInitialized) return;
     if (this.changeTimeout) clearTimeout(this.changeTimeout);
+
+    // Run diagnostics instantly on change for zero-latency feedback!
+    this.refreshDiagnostics();
 
     this.changeTimeout = setTimeout(() => {
       const text = this.editor.getValue();
@@ -171,9 +221,7 @@ export class LspClient {
     }, 250); // Debounce to avoid overloading LSP
   }
 
-  private handleDiagnostics(params: any) {
-    if (params.uri !== this.uri) return;
-    const diagnostics = params.diagnostics || [];
+  private refreshDiagnostics() {
     const session = this.editor.getSession();
 
     // Clear old markers safely
@@ -187,8 +235,11 @@ export class LspClient {
     const aceObj = (window as any).ace;
     const Range = aceObj ? aceObj.require("ace/range").Range : null;
 
-    const annotations: Ace.Annotation[] = diagnostics.map((diag: any) => {
-      // LSP is 0-indexed line & character
+    const text = this.editor.getValue();
+    const annotations: Ace.Annotation[] = [];
+
+    // 1. Process server diagnostics (LSP)
+    this.serverDiagnostics.forEach((diag: any) => {
       const startRow = diag.range.start.line;
       const startCol = diag.range.start.character;
       const endRow = diag.range.end.line;
@@ -204,22 +255,69 @@ export class LspClient {
         className = "lsp-warning-marker";
       }
 
-      // Add a visual text marker in the editor if Range exists
       if (Range && startRow !== undefined && startCol !== undefined) {
-        // Adjust end column to make sure there's a visible highlight length
         const adjustedEndCol = (startRow === endRow && startCol === endCol) ? startCol + 1 : endCol;
         const r = new Range(startRow, startCol, endRow, adjustedEndCol);
         const markerId = session.addMarker(r, className, "text");
         this.diagnosticMarkers.push(markerId);
       }
 
-      return {
+      annotations.push({
         row: startRow,
         column: startCol,
         text: diag.message,
         type
-      };
+      });
     });
+
+    // 2. If HTML, run HTMLHint and merge results
+    if (this.language === "html") {
+      try {
+        const htmlHintErrors = HTMLHint.verify(text, {
+          "tagname-lowercase": true,
+          "attr-lowercase": true,
+          "attr-value-double-quotes": true,
+          "tag-pair": true,
+          "id-unique": true,
+          "src-not-empty": true,
+          "attr-no-duplication": true,
+          "tag-no-obsolete": true
+        });
+
+        htmlHintErrors.forEach((err: any) => {
+          const row = err.line - 1;
+          const col = err.col - 1;
+
+          let type: "error" | "warning" | "info" = "error";
+          let className = "lsp-error-marker";
+          if (err.type === "warning") {
+            type = "warning";
+            className = "lsp-warning-marker";
+          } else if (err.type === "info") {
+            type = "info";
+            className = "lsp-info-marker";
+          }
+
+          const isDuplicate = annotations.some(ann => ann.row === row && ann.column === col && ann.text === err.message);
+          if (!isDuplicate) {
+            if (Range) {
+              const r = new Range(row, col, row, col + (err.raw ? err.raw.length : 1));
+              const markerId = session.addMarker(r, className, "text");
+              this.diagnosticMarkers.push(markerId);
+            }
+
+            annotations.push({
+              row,
+              column: col,
+              text: err.message,
+              type
+            });
+          }
+        });
+      } catch (e) {
+        console.warn("[LSP Client] HTMLHint verification error:", e);
+      }
+    }
 
     session.setAnnotations(annotations);
   }

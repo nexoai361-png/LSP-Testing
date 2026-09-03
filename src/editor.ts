@@ -101,6 +101,38 @@ export class CodeEditorManager {
     // Custom LSP Hover Tooltip
     let hoverTooltip: HTMLDivElement | null = null;
     let hoverTimeout: any = null;
+    let isInsideTooltip = false;
+
+    const renderHoverHtml = (text: string): string => {
+      if (!text) return "";
+
+      // Escape basic HTML tags to prevent broken rendering or XSS
+      let escaped = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+      // Replace markdown links with neat MDN Reference links (without full URL text, keeping only "MDN Reference")
+      escaped = escaped.replace(/\\?\[([^\]]+)\\?\]\((https?:\/\/[^\s)]+)\)/g, (match, linkText, url) => {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: underline; font-weight: 600; cursor: pointer;">MDN Reference</a>`;
+      });
+
+      // Replace any remaining raw http/https links with MDN Reference links
+      escaped = escaped.replace(/(?<!href=")(https?:\/\/[^\s\)\>"]+)/g, (match) => {
+        let url = match;
+        let trailing = "";
+        const punc = /[.,;:)\\]+$/;
+        const m = url.match(punc);
+        if (m) {
+          trailing = m[0];
+          url = url.slice(0, -trailing.length);
+        }
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: underline; font-weight: 600; cursor: pointer;">MDN Reference</a>${trailing}`;
+      });
+
+      // No icons or extra VS Code styling are added, resulting in a clean layout.
+      return escaped.replace(/\r?\n/g, "<br>");
+    };
 
     const showHoverAt = async (row: number, column: number, clientX: number, clientY: number) => {
       if (!this.lspClient) return;
@@ -112,16 +144,30 @@ export class CodeEditorManager {
 
       if (!hoverTooltip) {
         hoverTooltip = document.createElement('div');
-        hoverTooltip.className = 'fixed bg-[#1e1e1e] text-[#cccccc] border border-[#454545] rounded-md p-3 text-xs shadow-2xl z-[99999] pointer-events-none whitespace-pre-wrap leading-relaxed transition-opacity duration-150 font-[\'Lato\',sans-serif]';
+        hoverTooltip.className = 'fixed bg-[#1e1e1e] text-[#cccccc] border border-[#454545] rounded-md p-3 text-xs shadow-2xl z-[99999] pointer-events-auto whitespace-normal leading-relaxed transition-opacity duration-150 font-[\'Lato\',sans-serif]';
+        
+        hoverTooltip.addEventListener('mouseenter', () => {
+          isInsideTooltip = true;
+        });
+
+        hoverTooltip.addEventListener('mouseleave', () => {
+          isInsideTooltip = false;
+          hideHover();
+        });
+
         document.body.appendChild(hoverTooltip);
       }
 
-      hoverTooltip.textContent = hoverText;
+      hoverTooltip.innerHTML = renderHoverHtml(hoverText);
 
       // Adjust dimensions dynamically
       hoverTooltip.style.width = '280px';
       hoverTooltip.style.maxWidth = 'calc(100vw - 32px)';
       hoverTooltip.style.boxSizing = 'border-box';
+      hoverTooltip.style.overflowWrap = 'break-word';
+      hoverTooltip.style.wordBreak = 'break-word';
+      hoverTooltip.style.maxHeight = '240px';
+      hoverTooltip.style.overflowY = 'auto';
 
       const tooltipWidth = hoverTooltip.offsetWidth || 280;
       const tooltipHeight = hoverTooltip.offsetHeight || 60;
@@ -148,11 +194,12 @@ export class CodeEditorManager {
     };
 
     const hideHover = () => {
+      if (isInsideTooltip) return;
       if (hoverTooltip) {
         hoverTooltip.style.opacity = '0';
         const el = hoverTooltip;
         setTimeout(() => {
-          if (el && el.style.opacity === '0') {
+          if (el && el.style.opacity === '0' && !isInsideTooltip) {
             el.remove();
             if (hoverTooltip === el) hoverTooltip = null;
           }
@@ -162,10 +209,12 @@ export class CodeEditorManager {
 
     const mouseTarget = this.editor.renderer.getMouseEventTarget();
     mouseTarget.addEventListener('mousemove', (e: MouseEvent) => {
+      if (isInsideTooltip) return;
       if (hoverTimeout) clearTimeout(hoverTimeout);
       if (!this.lspClient) return;
 
       hoverTimeout = setTimeout(() => {
+        if (isInsideTooltip) return;
         const pos = this.editor!.renderer.screenToTextCoordinates(e.clientX, e.clientY);
         if (pos) {
           showHoverAt(pos.row, pos.column, e.clientX, e.clientY);
@@ -173,9 +222,17 @@ export class CodeEditorManager {
       }, 500);
     });
 
-    mouseTarget.addEventListener('mouseout', () => {
+    mouseTarget.addEventListener('mouseout', (e: MouseEvent) => {
+      const related = e.relatedTarget as HTMLElement;
+      if (related && (related === hoverTooltip || hoverTooltip?.contains(related))) {
+        return;
+      }
       if (hoverTimeout) clearTimeout(hoverTimeout);
-      hideHover();
+      setTimeout(() => {
+        if (!isInsideTooltip) {
+          hideHover();
+        }
+      }, 100);
     });
 
     this.updateLsp(initialMode);
